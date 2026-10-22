@@ -64,7 +64,7 @@ The configured projection input paths have been checked against preparation scri
 
 The inland-water mask is a display-only mask based on generalized Natural Earth lakes. It does not change the original prediction files and does not cover every small water body.
 
-GBIF observations reflect reporting effort and data quality as well as species distribution. They are not a systematic survey. EAB and MPB queries cover all years worldwide; OPM queries cover the last five calendar years within the app's European viewing region. The displayed subset is capped at 20,000 records. Disputed MPB record 5018499248 is excluded.
+GBIF observations reflect reporting effort and data quality as well as species distribution. They are not a systematic survey. EAB and MPB queries cover all years worldwide; OPM queries cover the last five calendar years within the app's European viewing region. The displayed subset is capped at 3,000 records. Disputed MPB record 5018499248 is excluded.
 
 ## Sources and reuse
 

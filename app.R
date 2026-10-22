@@ -102,7 +102,8 @@ sweden_sf <- sf::st_transform(sweden_sf, 4326)
 
 # Show the complete matching set when it is within this browser-friendly cap.
 # GBIF pages at most 300 records per request; larger sets can use GBIF map tiles later.
-observation_limit <- 20000L
+observation_limit <- 3000L
+observation_cache <- new.env(parent = emptyenv())
 
 eu_country_codes <- c(
   "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
@@ -154,58 +155,94 @@ combine_record_pages <- function(pages) {
 }
 
 fetch_recent_records <- function(taxon_key, years = NULL, limit = observation_limit,
-                                 countries = NULL, geometry = NULL) {
-  base_args <- list(
-    taxonKey = taxon_key,
-    basisOfRecord = observation_record_types,
-    hasCoordinate = TRUE,
-    occurrenceStatus = "PRESENT",
-    curlopts = list(timeout = 30)
-  )
+                                 countries = NULL, geometry = NULL,
+                                 force_refresh = FALSE, progress = function(...) NULL) {
+  cache_key <- paste(taxon_key, paste(years, collapse = ","), limit,
+                     paste(countries, collapse = ","), paste(geometry, collapse = ""), sep = "|")
+  cached <- observation_cache[[cache_key]]
+  now <- Sys.time()
+  if (!force_refresh && !is.null(cached) &&
+      as.numeric(difftime(now, cached$cached_at, units = "secs")) <
+        (if (isTRUE(cached$partial)) 60 else 3600)) return(cached)
+
+  started <- proc.time()[["elapsed"]]
+  request <- function(args) {
+    remaining <- 15 - (proc.time()[["elapsed"]] - started)
+    if (remaining <= 0) stop("GBIF retrieval time budget reached.")
+    args$curlopts <- list(timeout = min(8, remaining), connecttimeout = min(5, remaining))
+    do.call(rgbif::occ_search, args)
+  }
+  base_args <- list(taxonKey = taxon_key, basisOfRecord = observation_record_types,
+                    hasCoordinate = TRUE, occurrenceStatus = "PRESENT")
   if (!is.null(countries)) base_args$country <- paste(countries, collapse = ";")
   if (!is.null(geometry)) base_args$geometry <- geometry
-  # Count the complete window separately from the capped displayed subset.
-  count_args <- c(base_args, list(limit = 0))
-  if (!is.null(years)) {
-    count_args$year <- paste(min(years), max(years), sep = ",")
-  }
-  counted <- do.call(rgbif::occ_search, count_args)
-  total <- counted$meta$count
-  if (is.null(total) || length(total) != 1 || is.na(total)) {
-    stop("GBIF returned no usable record count.")
-  }
-  pages <- list()
-  fetched <- 0L
-  if (total > 0) {
-    year_groups <- if (is.null(years)) list(NULL) else as.list(sort(years, decreasing = TRUE))
-    for (year in year_groups) {
-      offset <- 0L
-      repeat {
-        page_size <- min(300L, limit - fetched)
-        if (page_size <= 0L) break
-        page_args <- c(base_args, list(limit = page_size, start = offset))
-        if (!is.null(year)) page_args$year <- year
-        result <- do.call(rgbif::occ_search, page_args)
-        page <- result$data
-        if (is.null(page) || nrow(page) == 0L) break
-        pages[[length(pages) + 1L]] <- page
-        fetched <- fetched + nrow(page)
-        offset <- offset + nrow(page)
-        if (isTRUE(result$meta$endOfRecords) || nrow(page) < page_size ||
-            offset + page_size >= 100000L) break
+  fetch <- function() {
+    count_args <- c(base_args, list(limit = 0))
+    if (!is.null(years)) count_args$year <- paste(min(years), max(years), sep = ",")
+    counted <- request(count_args)
+    total <- counted$meta$count
+    if (is.null(total) || length(total) != 1 || is.na(total))
+      stop("GBIF returned no usable record count.")
+    pages <- list()
+    fetched <- 0L
+    interrupted <- FALSE
+    failure <- NULL
+    if (total > 0) {
+      year_groups <- if (is.null(years)) list(NULL) else as.list(sort(years, decreasing = TRUE))
+      for (year in year_groups) {
+        offset <- 0L
+        repeat {
+          page_size <- min(300L, limit - fetched)
+          if (page_size <= 0L) break
+          page_args <- c(base_args, list(limit = page_size, start = offset))
+          if (!is.null(year)) page_args$year <- year
+          result <- tryCatch(request(page_args), error = function(e) {
+            failure <<- conditionMessage(e)
+            NULL
+          })
+          if (is.null(result)) {
+            interrupted <- TRUE
+            break
+          }
+          page <- result$data
+          if (is.null(page) || nrow(page) == 0L) break
+          # Retain only fields used by the map and record links.
+          keep <- intersect(c("key", "decimalLongitude", "decimalLatitude",
+                              "eventDate", "basisOfRecord", "locality", "country"), names(page))
+          pages[[length(pages) + 1L]] <- page[, keep, drop = FALSE]
+          fetched <- fetched + nrow(page)
+          offset <- offset + nrow(page)
+          progress(min(1, fetched / max(1, min(limit, total))), fetched)
+          if (isTRUE(result$meta$endOfRecords) || nrow(page) < page_size ||
+              offset + page_size >= 100000L) break
+        }
+        if (interrupted || fetched >= limit) break
       }
-      if (fetched >= limit) break
     }
+    if (interrupted && fetched == 0L) stop(failure)
+    records <- combine_record_pages(pages)
+    if (nrow(records) > 0) {
+      records <- records[
+        is.finite(records$decimalLongitude) & is.finite(records$decimalLatitude) &
+          abs(records$decimalLongitude) <= 180 & abs(records$decimalLatitude) <= 90,
+        , drop = FALSE]
+    }
+    list(data = records, total = total, partial = interrupted,
+         stale = FALSE, cached_at = Sys.time())
   }
-  records <- combine_record_pages(pages)
-  if (nrow(records) > 0) {
-    records <- records[
-      is.finite(records$decimalLongitude) & is.finite(records$decimalLatitude) &
-        abs(records$decimalLongitude) <= 180 & abs(records$decimalLatitude) <= 90,
-      , drop = FALSE
-    ]
+  result <- tryCatch(fetch(), error = function(e) {
+    if (is.null(cached)) stop(e)
+    cached$stale <- TRUE
+    cached
+  })
+  # Do not replace a more complete cached result with an interrupted refresh.
+  if (isTRUE(result$partial) && !is.null(cached) &&
+      nrow(cached$data) >= nrow(result$data)) {
+    cached$stale <- TRUE
+    return(cached)
   }
-  list(data = records, total = total)
+  if (!isTRUE(result$stale)) observation_cache[[cache_key]] <- result
+  result
 }
 
 # -------------------------------------------------------------------------
@@ -304,7 +341,7 @@ help_page <- info_dialog("how-it-works", "How it works",
   tags$details(tags$summary("Reported observations"),
     p("Live GBIF human observations are retrieved for each species. Museum specimens are excluded. Record coverage varies by species, and density reflects reporting effort rather than abundance. No records does not establish absence."),
     p("EAB and MPB use worldwide records across all years. OPM uses a European search region and the current year plus four preceding calendar years. A disputed German MPB record is excluded after review."),
-    p("Up to 20,000 records are retrieved. Use Refresh records to request an update; individual points link to the original GBIF record.")),
+    p("The interactive map retrieves up to 3,000 records, with a short time budget. It may show fewer if GBIF is slow. This is a browsing subset, not a representative sample. OPM retrieval prioritizes recent years. Successful results are reused for up to one hour within a running app process; Refresh records requests an update. If that update fails, previously retrieved records may remain visible. Individual points link to the original GBIF record.")),
   tags$details(tags$summary("Models and climate scenarios"),
     p("MaxEnt relates occurrence locations to climate conditions, then projects those relationships across Sweden. These are experimental models; Swedish predictive accuracy has not been established."),
     p("Baseline: provisional CRU-derived climatology for 2001–2020 at 2.5 arc minutes."),
@@ -558,11 +595,11 @@ summary:focus-visible,button:focus-visible,a:focus-visible {outline:3px solid #8
         Dropdown.shinyInput("view_selector", label = "Map layer",
           options = list(list(key = "occurrence", text = "Reported observations"),
                          list(key = "model", text = "Climate suitability")),
-          defaultSelectedKey = "occurrence")),
+          value = "model")),
       div(class = "selector", span(class = "sentence-word", "for"),
         Dropdown.shinyInput("pest_selector", label = "Species",
           options = lapply(species_list, function(sp) list(key = sp, text = unname(species_common_names[sp]))),
-          defaultSelectedKey = species_list[1])),
+          value = "Thaumetopoea processionea")),
       conditionalPanel("input.view_selector === 'model'", uiOutput("model_controls")),
       conditionalPanel("input.view_selector === 'occurrence'",
         actionButton("refresh_observations", "Refresh records", class = "refresh-button"))
@@ -690,7 +727,11 @@ server <- function(input, output, session) {
   })
 
 
+  last_observation_refresh <- 0L
   pest_data <- reactive({
+    refresh_click <- input$refresh_observations
+    force_refresh <- !is.null(refresh_click) && refresh_click > last_observation_refresh
+    if (force_refresh) last_observation_refresh <<- refresh_click
     species <- selected_species()
     policy <- observation_policies[[species]]
     current_year <- as.integer(format(Sys.Date(), "%Y"))
@@ -701,7 +742,10 @@ server <- function(input, output, session) {
     tryCatch({
       withProgress(message = "Loading GBIF human observations", value = 0, {
         context <- fetch_recent_records(
-          taxon_key, years, observation_limit, policy$countries, policy$geometry
+          taxon_key, years, observation_limit, policy$countries, policy$geometry,
+          force_refresh = force_refresh,
+          progress = function(value, count) setProgress(value, detail =
+            sprintf("%s records received", format(count, big.mark = ",")))
         )
         observations <- context$data
         total <- context$total
@@ -717,6 +761,7 @@ server <- function(input, output, session) {
         setProgress(1)
         list(
           data = observations, total = total,
+          partial = context$partial, stale = context$stale, retrieved_at = context$cached_at,
           display_total = max(0, total - excluded_count),
           excluded_count = excluded_count,
           period = if (is.null(years)) "all years" else
@@ -737,7 +782,7 @@ server <- function(input, output, session) {
         error = TRUE, error_message = conditionMessage(e)
       )
     })
-  }) %>% bindCache(selected_species(), Sys.Date(), input$refresh_observations)
+  })
 
   observation_summary <- reactive({
     gbif <- pest_data()
@@ -767,6 +812,11 @@ server <- function(input, output, session) {
     div(class = "source-note", strong(gbif$scope),
       p(sprintf("Showing %s of %s matching human observations.",
                 format(nrow(gbif$data), big.mark = ","), format(gbif$display_total, big.mark = ","))),
+      if (gbif$display_total > nrow(gbif$data))
+        p("Browsing subset, not a representative sample. Up to 3,000 records are displayed."),
+      if (isTRUE(gbif$partial)) p("GBIF retrieval stopped early; available records are shown."),
+      if (isTRUE(gbif$stale)) p("Refresh incomplete; previously retrieved records are shown."),
+      p(paste("Retrieved:", format(gbif$retrieved_at, "%Y-%m-%d %H:%M UTC", tz = "UTC"))),
       p("Numbers inside circles count grouped records. Zoom in and select a point to view its GBIF record."))
   })
 
@@ -776,7 +826,7 @@ server <- function(input, output, session) {
   output$species_card <- renderUI({
     species <- selected_species()
     photo <- species_photos[[species]]
-    tags$details(
+    tags$details(open = TRUE,
       tags$summary(
         div(class = "species-common-name", species_common_names[[species]]),
         div(class = "species-scientific-name", species)),
@@ -964,7 +1014,8 @@ server <- function(input, output, session) {
               group = "Observations",
               clusterOptions = markerClusterOptions(
                 showCoverageOnHover = FALSE,
-                spiderfyOnMaxZoom = TRUE
+                spiderfyOnMaxZoom = TRUE,
+                chunkedLoading = TRUE, chunkInterval = 100, chunkDelay = 25
               )
             )
           

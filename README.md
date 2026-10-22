@@ -2,7 +2,9 @@
 
 A map-first R Shiny application for forest-owner preparedness in Sweden. Explore reported invasive forest-pest occurrences and experimental climate-suitability projections.
 
-**Status:** beta preparation. Target beta launch: 6 November 2026. A public deployment URL will be added after deployment.
+**[Open InvaSkog · Beta](https://01a163e0-ca46-aaf0-dcb9-f416353e9de4.share.connect.posit.cloud/)**
+
+The beta is online for testing. Feedback from forest owners will help improve usability and interpretation.
 
 Developed by **Alexandra Nagy**, with support from **LNU Innovation**.
 

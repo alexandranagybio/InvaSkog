@@ -1,3 +1,5 @@
+<img src="invaskog-logo.png" alt="InvaSkog moth logo" width="120">
+
 # InvaSkog
 
 A map-first R Shiny application for forest-owner preparedness in Sweden. Explore reported invasive forest-pest occurrences and experimental climate-suitability projections.

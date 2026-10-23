@@ -500,7 +500,7 @@ h1 {font-size:25px;font-weight:650;margin:0;letter-spacing:-.6px;}
 .ms-Dropdown-caretDownWrapper {height:38px;line-height:38px;}
 .ms-Dropdown:focus::after {border-color:#634497!important;}
 .form-group {margin-bottom:0;} .form-control {border:1px solid #A8BBA5;border-radius:7px;color:#202924;box-shadow:none;}
-#model_controls .form-group {width:260px;} #model_controls label {font-size:11px;margin:0;color:#626B67;}
+#model_controls .selector > div {width:300px;max-width:calc(100vw - 20px);}
 .refresh-button {background:#fff;color:#064E3B;border:1px solid #064E3B;padding:6px 12px;}
 .refresh-button:hover {background:#EDF2EB;color:#064E3B;}
 .map-container {position:relative;flex:1;min-height:180px;isolation:isolate;}
@@ -532,7 +532,7 @@ summary:focus-visible,button:focus-visible,a:focus-visible {outline:3px solid #8
 .legend-title {display:block;font-weight:650;}.popup-species {font-style:italic;font-weight:600;}
 .shiny-busy .map-container::after {content:'Loading map data…';position:absolute;z-index:900;left:50%;top:50%;transform:translate(-50%,-50%);background:white;padding:12px 20px;border-radius:8px;color:#064E3B;box-shadow:0 2px 12px #19352D22;}
 @media(max-width:900px){.selection-strip {gap:8px;padding:8px 14px;}.selector > div {width:205px;}.top-bar{padding:6px 14px;}.map-status{max-width:42%;}.header-actions{gap:0;}}
-@media(max-width:600px){.top-bar{min-height:52px;padding:4px 10px;}.brand-logo{width:36px;height:36px;}.brand-group{gap:7px;}h1{font-size:20px;}.text-button{font-size:11px;padding:4px 6px;}.beta-badge{padding:4px 6px;}.selection-strip{padding:7px 10px;gap:6px;}.selector{flex:1;min-width:140px;}.selector > div{width:100%;}.sentence-word{display:none;}#model_controls .form-group{width:210px;}.refresh-button{font-size:12px;}.species-overlay{top:10px;left:10px;width:220px;}.species-common-name{font-size:13px;}.species-scientific-name{font-size:11px;}summary{padding:10px;}.options-overlay{right:10px;top:90px;}.reading-overlay{left:10px;bottom:125px;max-width:250px;}.panel-content{max-height:30vh;}.map-status{left:10px;transform:none;bottom:30px;max-width:calc(100% - 180px);font-size:10px;}.info.legend{max-width:155px;font-size:10px;padding:8px;}.app-footer{padding:6px 10px;font-size:10px;}.app-footer span:last-child{display:none;}}
+@media(max-width:600px){.top-bar{min-height:52px;padding:4px 10px;}.brand-logo{width:36px;height:36px;}.brand-group{gap:7px;}h1{font-size:20px;}.text-button{font-size:11px;padding:4px 6px;}.beta-badge{padding:4px 6px;}.selection-strip{padding:7px 10px;gap:6px;}.selector{flex:1;min-width:140px;}.selector > div{width:100%;}.sentence-word{display:none;}.refresh-button{font-size:12px;}.species-overlay{top:10px;left:10px;width:220px;}.species-common-name{font-size:13px;}.species-scientific-name{font-size:11px;}summary{padding:10px;}.options-overlay{right:10px;top:90px;}.reading-overlay{left:10px;bottom:125px;max-width:250px;}.panel-content{max-height:30vh;}.map-status{left:10px;transform:none;bottom:30px;max-width:calc(100% - 180px);font-size:10px;}.info.legend{max-width:155px;font-size:10px;padding:8px;}.app-footer{padding:6px 10px;font-size:10px;}.app-footer span:last-child{display:none;}}
 
 .species-overlay {background:#193F35;border-color:#31584B;width:310px;color:#F5F8F3;}
 .species-overlay summary {color:#fff;}
@@ -675,8 +675,14 @@ server <- function(input, output, session) {
                 future = "Future: 2041–2060 · SSP2-4.5",
                 future_spread = "Future climate-model disagreement")
     available <- unique(rows$period_key)
-    selectInput("climate_period", "Climate period / layer",
-      choices = setNames(available, unname(labels[available])), selected = "baseline")
+    div(class = "selector",
+      span(class = "sentence-word", "Climate period / layer"),
+      Dropdown.shinyInput("climate_period", label = "Climate period / layer",
+        options = lapply(available, function(period) {
+          list(key = period, text = unname(labels[period]))
+        }),
+        value = if ("baseline" %in% available) "baseline" else available[[1]])
+    )
   })
 
   observeEvent(input$locate_stand, {
